@@ -3,6 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
+	"net"
+	"sync"
 )
 
 // flags
@@ -13,6 +16,42 @@ var (
 	verbose   = flag.Bool("verbose", false, "verbose logging on/off")
 )
 
+// if nick is nil we should honor the first NICK sent
+// otherwise they'll require the prefix
+var nick *string
+
+var clients []net.Conn
+var clientsChan = make(chan net.Conn)
+
 func main() {
-	fmt.Println("Hello, world!")
+	flag.Parse()
+	if *server == "" {
+		log.Fatal("invalid server address")
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", *localPort))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	wait := make(chan struct{})
+	once := &sync.Once{}
+
+	go func() {
+		clientConn, err := ln.Accept()
+		if err != nil {
+			log.Println(err)
+		}
+		once.Do(func() {
+			wait <- struct{}{}
+		})
+		clientsChan <- clientConn
+	}()
+
+	go func() {
+		client := <-clientsChan
+		clients = append(clients, client)
+	}()
+	<-wait
+
+	select {}
 }
