@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -48,10 +49,6 @@ func main() {
 		clientsChan <- clientConn
 	}()
 
-	go func() {
-		client := <-clientsChan
-		clients = append(clients, client)
-	}()
 	<-wait
 
 	server, err := net.Dial("tcp", *server)
@@ -59,9 +56,15 @@ func main() {
 		log.Fatal(err)
 	}
 
+	go func() {
+		for client := range clientsChan {
+			clients = append(clients, client)
+			go io.Copy(server, client)
+		}
+	}()
+
 	// 512 is the maximum message size according to RFC 1459
 	r := bufio.NewReaderSize(server, 512)
-
 	for {
 		b, _, err := r.ReadLine()
 		if err != nil {
