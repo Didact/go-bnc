@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"log"
@@ -52,6 +53,25 @@ func main() {
 		clients = append(clients, client)
 	}()
 	<-wait
+
+	server, err := net.Dial("tcp", *server)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 512 is the maximum message size according to RFC 1459
+	r := bufio.NewReaderSize(server, 512)
+
+	for {
+		b, _, err := r.ReadLine()
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _, conn := range clients {
+			conn.Write(b)
+			conn.Write([]byte("\r\n"))
+		}
+	}
 
 	select {}
 }
