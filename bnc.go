@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +18,38 @@ var (
 	localPort = flag.Int("localPort", 3434, "local port to listen on")
 	verbose   = flag.Bool("verbose", false, "verbose logging on/off")
 )
+
+// conn represents a connection from a client to the bnc
+type conn struct {
+	net.Conn
+}
+
+func (c *conn) Read(p []byte) (n int, err error) {
+	n, err = c.Conn.Read(p)
+	fmt.Println(string(p[:n]))
+
+	if err != nil {
+		fmt.Println("non-nil err")
+		return n, err
+	}
+
+	// assume each read contains one message
+	// tbh I'm not sure would I should do with p in this case
+	if bytes.HasPrefix(p, []byte("QUIT")) {
+		fmt.Println("QUIT")
+		return 0, nil
+	}
+
+	if bytes.HasPrefix(p, []byte("NICK")) {
+		if nick != nil {
+			fmt.Println("non-nil nick")
+			return 0, nil
+		}
+		nick = new(string)
+		*nick = string(p[5:])
+	}
+	return n, nil
+}
 
 // if nick is nil we should honor the first NICK sent
 // otherwise they'll require the prefix
@@ -59,7 +92,8 @@ func main() {
 	go func() {
 		for client := range clientsChan {
 			clients = append(clients, client)
-			go io.Copy(server, client)
+			wrapper := &conn{client}
+			go io.Copy(server, wrapper)
 		}
 	}()
 
