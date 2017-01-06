@@ -3,13 +3,17 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
 	"sync"
 )
+
+var RN = []byte{'\r', '\n'}
 
 // flags
 var (
@@ -22,33 +26,44 @@ var (
 // conn represents a connection from a client to the bnc
 type conn struct {
 	net.Conn
+	buf []byte
 }
 
 func (c *conn) Read(p []byte) (n int, err error) {
-	n, err = c.Conn.Read(p)
-	fmt.Println(string(p[:n]))
-
-	if err != nil {
-		fmt.Println("non-nil err")
-		return n, err
+	if len(c.buf) == 0 {
+		c.buf = make([]byte, len(p))
+		n, err := c.Conn.Read(c.buf)
+		if err != nil {
+			return n, err
+		}
+		c.buf = c.buf[:n]
 	}
+	i := bytes.Index(c.buf, RN)
+	if i < 0 {
+		return 0, errors.New("wtf")
+	}
+	//log.Printf("input: %s", c.buf[:i+len(RN)])
+	b := c.process(c.buf[:i+len(RN)])
+	c.buf = c.buf[i+len(RN):]
+	n = copy(p, b)
+	return n, nil
+}
 
-	// assume each read contains one message
-	// tbh I'm not sure would I should do with p in this case
+func (c *conn) process(p []byte) []byte {
 	if bytes.HasPrefix(p, []byte("QUIT")) {
-		fmt.Println("QUIT")
-		return 0, nil
+		log.Println("QUIT")
+		return nil
 	}
 
 	if bytes.HasPrefix(p, []byte("NICK")) {
 		if nick != nil {
-			fmt.Println("non-nil nick")
-			return 0, nil
+			log.Println("non-nil nick")
+			return nil
 		}
 		nick = new(string)
 		*nick = string(p[5:])
 	}
-	return n, nil
+	return p
 }
 
 // if nick is nil we should honor the first NICK sent
@@ -92,8 +107,9 @@ func main() {
 	go func() {
 		for client := range clientsChan {
 			clients = append(clients, client)
-			wrapper := &conn{client}
-			go io.Copy(server, wrapper)
+			wrapper := &conn{client, nil}
+			tee := io.TeeReader(wrapper, os.Stdout)
+			go io.Copy(server, tee)
 		}
 	}()
 
@@ -105,6 +121,7 @@ func main() {
 			log.Fatal(err)
 		}
 		for _, conn := range clients {
+			fmt.Println(string(b))
 			conn.Write(b)
 			conn.Write([]byte("\r\n"))
 		}
