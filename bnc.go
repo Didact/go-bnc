@@ -23,13 +23,13 @@ var (
 	verbose   = flag.Bool("verbose", false, "verbose logging on/off")
 )
 
-// conn represents a connection from a client to the bnc
-type conn struct {
+// clientConn represents a connection from a client to the bnc
+type clientConn struct {
 	net.Conn
 	buf []byte
 }
 
-func (c *conn) Read(p []byte) (n int, err error) {
+func (c *clientConn) Read(p []byte) (n int, err error) {
 	if len(c.buf) == 0 {
 		c.buf = make([]byte, len(p))
 		n, err := c.Conn.Read(c.buf)
@@ -43,13 +43,24 @@ func (c *conn) Read(p []byte) (n int, err error) {
 		return 0, errors.New("wtf")
 	}
 	//log.Printf("input: %s", c.buf[:i+len(RN)])
-	b := c.process(c.buf[:i+len(RN)])
+	message := c.buf[:i+len(RN)]
 	c.buf = c.buf[i+len(RN):]
+
+	if bytes.HasPrefix(message, []byte("PING")) {
+		message[1] = 'O'
+		c.Conn.Write(message)
+		return c.Read(p)
+	}
+
+	b := c.process(message)
+	if len(b) == 0 {
+		return c.Read(p)
+	}
 	n = copy(p, b)
 	return n, nil
 }
 
-func (c *conn) process(p []byte) []byte {
+func (c *clientConn) process(p []byte) []byte {
 	if bytes.HasPrefix(p, []byte("QUIT")) {
 		log.Println("QUIT")
 		return nil
@@ -64,6 +75,25 @@ func (c *conn) process(p []byte) []byte {
 		*nick = string(p[5:])
 	}
 	return p
+}
+
+type serverConn struct {
+	net.Conn
+	buf []byte
+}
+
+func (s *serverConn) Read(p []byte) (n int, err error) {
+	n, err = s.Conn.Read(p)
+	if bytes.HasPrefix(p, []byte("PING")) {
+		p[1] = 'O'
+		s.Conn.Write(p[:n])
+
+		// initially I just returned 0, nil, but go's stdlib (correctly) realizes
+		// that multiple Read calls returning 0, nil means something is fishy
+		// small chance of stack overflow if you get nothing but PING's, I guess
+		return s.Read(p)
+	}
+	return n, err
 }
 
 // if nick is nil we should honor the first NICK sent
@@ -87,14 +117,14 @@ func main() {
 	once := &sync.Once{}
 
 	go func() {
-		clientConn, err := ln.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
 			log.Println(err)
 		}
 		once.Do(func() {
 			wait <- struct{}{}
 		})
-		clientsChan <- clientConn
+		clientsChan <- conn
 	}()
 
 	<-wait
@@ -107,14 +137,14 @@ func main() {
 	go func() {
 		for client := range clientsChan {
 			clients = append(clients, client)
-			wrapper := &conn{client, nil}
+			wrapper := &clientConn{client, nil}
 			tee := io.TeeReader(wrapper, os.Stdout)
 			go io.Copy(server, tee)
 		}
 	}()
 
 	// 512 is the maximum message size according to RFC 1459
-	r := bufio.NewReaderSize(server, 512)
+	r := bufio.NewReaderSize(&serverConn{server, nil}, 512)
 	for {
 		b, _, err := r.ReadLine()
 		if err != nil {
@@ -123,7 +153,7 @@ func main() {
 		for _, conn := range clients {
 			fmt.Println(string(b))
 			conn.Write(b)
-			conn.Write([]byte("\r\n"))
+			conn.Write(RN)
 		}
 	}
 
